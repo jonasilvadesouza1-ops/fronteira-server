@@ -85,7 +85,7 @@ export class Matchmaker extends DurableObject {
   }
   broadcast() {
     const rooms = {};
-    for (const m of MODES) { const mem = this.members(m); rooms[m] = { code: this.rooms[m].code, startAt: this.rooms[m].startAt, n: mem.length, names: mem.map((x) => x.a.name) }; }
+    for (const m of MODES) { const mem = this.members(m); rooms[m] = { code: this.rooms[m].code, startAt: this.rooms[m].startAt, n: mem.length, names: mem.map((x) => x.a.name), votes: [0, 1, 2].map((d) => mem.filter((x) => x.a.diff === d).length) }; }
     const msg = JSON.stringify({ t: "state", now: Date.now(), online: this.ctx.getWebSockets().length, rooms });
     for (const ws of this.ctx.getWebSockets()) { try { ws.send(msg); } catch {} }
   }
@@ -102,13 +102,14 @@ export class Matchmaker extends DurableObject {
     if (m.a === "join" && !a.mode && MODES.includes(m.mode)) {
       const room = this.rooms[m.mode];
       if (this.members(m.mode).length >= MAXP) { ws.send(JSON.stringify({ t: "full" })); return; }
-      ws.serializeAttachment({ mode: m.mode, code: room.code, t: Date.now(), name: String(m.name || "Jogador").slice(0, 12) });
+      ws.serializeAttachment({ mode: m.mode, code: room.code, t: Date.now(), name: String(m.name || "Jogador").slice(0, 12), diff: [0, 1, 2].includes(m.diff) ? m.diff : 1 });
       const now = Date.now(), n = this.members(m.mode).length;
       if (!room.startAt) room.startAt = now + WAIT;
       if (n >= MAXP && room.startAt - now > FULL) room.startAt = now + FULL;
       this.save(); await this.rearm();
       ws.send(JSON.stringify({ t: "joined", mode: m.mode, code: room.code }));
       this.broadcast();
+    } else if (m.a === "diff" && a.mode && [0, 1, 2].includes(m.d)) { a.diff = m.d; ws.serializeAttachment(a); this.broadcast();
     } else if (m.a === "leave" && a.mode) await this.leave(ws);
   }
   async leave(ws) {
@@ -126,8 +127,10 @@ export class Matchmaker extends DurableObject {
     for (const m of MODES) {
       const r = this.rooms[m];
       if (r.startAt && r.startAt <= now) {
-        this.members(m).forEach((x, k) => {
-          try { x.ws.send(JSON.stringify({ t: "go", mode: m, code: r.code, role: k ? "join" : "host" })); } catch {}
+        const mem = this.members(m), cnt = [0, 1, 2].map((d) => mem.filter((x) => x.a.diff === d).length);
+        let best = 1, bc = -1; for (const d of [1, 0, 2]) if (cnt[d] > bc) { bc = cnt[d]; best = d; }
+        mem.forEach((x, k) => {
+          try { x.ws.send(JSON.stringify({ t: "go", mode: m, code: r.code, role: k ? "join" : "host", d: best })); } catch {}
           x.ws.serializeAttachment({});
         });
         this.rooms[m] = this.fresh();
