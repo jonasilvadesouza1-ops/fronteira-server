@@ -33,7 +33,7 @@ export class Room extends DurableObject {
       if (!host) return new Response("sala nao encontrada", { status: 404 });
       const used = new Set(this.guests().map((s) => s.deserializeAttachment().pid));
       let pid = 1; while (used.has(pid)) pid++;
-      if (pid > 8) return new Response("sala cheia", { status: 403 });
+      if (pid > 34) return new Response("sala cheia", { status: 403 });
       att = { host: false, pid };
     }
     const [client, server] = Object.values(new WebSocketPair());
@@ -65,7 +65,7 @@ export class Room extends DurableObject {
 }
 
 // ===== Matchmaking: uma sala aberta por modo; ao começar, outra é criada sozinha =====
-const MODES = ["ffa", "team", "zombie"], MAXP = 8, WAIT = 40000, FULL = 5000;
+const MODES = ["ffa", "team", "zombie"], MAXP = 35, WAIT = 40000, FULL = 5000;
 export class Matchmaker extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -85,8 +85,8 @@ export class Matchmaker extends DurableObject {
   }
   broadcast() {
     const rooms = {};
-    for (const m of MODES) rooms[m] = { code: this.rooms[m].code, startAt: this.rooms[m].startAt, n: this.members(m).length, max: MAXP };
-    const msg = JSON.stringify({ t: "state", now: Date.now(), rooms });
+    for (const m of MODES) { const mem = this.members(m); rooms[m] = { code: this.rooms[m].code, startAt: this.rooms[m].startAt, n: mem.length, names: mem.map((x) => x.a.name) }; }
+    const msg = JSON.stringify({ t: "state", now: Date.now(), online: this.ctx.getWebSockets().length, rooms });
     for (const ws of this.ctx.getWebSockets()) { try { ws.send(msg); } catch {} }
   }
   async fetch() {
@@ -101,7 +101,7 @@ export class Matchmaker extends DurableObject {
     const a = ws.deserializeAttachment() || {};
     if (m.a === "join" && !a.mode && MODES.includes(m.mode)) {
       const room = this.rooms[m.mode];
-      if (this.members(m.mode).length >= MAXP) return;
+      if (this.members(m.mode).length >= MAXP) { ws.send(JSON.stringify({ t: "full" })); return; }
       ws.serializeAttachment({ mode: m.mode, code: room.code, t: Date.now(), name: String(m.name || "Jogador").slice(0, 12) });
       const now = Date.now(), n = this.members(m.mode).length;
       if (!room.startAt) room.startAt = now + WAIT;
