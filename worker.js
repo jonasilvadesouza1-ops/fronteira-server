@@ -65,14 +65,14 @@ export class Room extends DurableObject {
 }
 
 // ===== Matchmaking: uma sala aberta por modo; ao começar, outra é criada sozinha =====
-const MODES = ["ffa", "team", "zombie"], MAXP = 35, WAIT = 40000, FULL = 5000;
+const MAPN = 8, MODES = ["ffa", "team", "zombie"], MAXP = 35, WAIT = 40000, FULL = 5000;
 export class Matchmaker extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.rooms = this.ctx.storage.kv.get("rooms") || {};
-    for (const m of MODES) if (!this.rooms[m]) this.rooms[m] = this.fresh();
+    for (const m of MODES) if (!this.rooms[m] || this.rooms[m].map == null) this.rooms[m] = this.fresh();
   }
-  fresh() { return { code: Math.random().toString(36).slice(2, 7).toUpperCase(), startAt: 0 }; }
+  fresh(prev) { let map; do { map = Math.floor(Math.random() * MAPN); } while (map === prev && MAPN > 1); return { code: Math.random().toString(36).slice(2, 7).toUpperCase(), startAt: 0, map }; }
   save() { this.ctx.storage.kv.put("rooms", this.rooms); }
   members(m) {
     const code = this.rooms[m].code;
@@ -85,7 +85,7 @@ export class Matchmaker extends DurableObject {
   }
   broadcast() {
     const rooms = {};
-    for (const m of MODES) { const mem = this.members(m); rooms[m] = { code: this.rooms[m].code, startAt: this.rooms[m].startAt, n: mem.length, names: mem.map((x) => x.a.name), votes: [0, 1, 2].map((d) => mem.filter((x) => x.a.diff === d).length) }; }
+    for (const m of MODES) { const mem = this.members(m); rooms[m] = { code: this.rooms[m].code, startAt: this.rooms[m].startAt, map: this.rooms[m].map, n: mem.length, names: mem.map((x) => x.a.name), votes: [0, 1, 2].map((d) => mem.filter((x) => x.a.diff === d).length) }; }
     const msg = JSON.stringify({ t: "state", now: Date.now(), online: this.ctx.getWebSockets().length, rooms });
     for (const ws of this.ctx.getWebSockets()) { try { ws.send(msg); } catch {} }
   }
@@ -101,11 +101,11 @@ export class Matchmaker extends DurableObject {
     const a = ws.deserializeAttachment() || {};
     if (m.a === "join" && !a.mode && MODES.includes(m.mode)) {
       const room = this.rooms[m.mode];
-      if (this.members(m.mode).length >= MAXP) { ws.send(JSON.stringify({ t: "full" })); return; }
+      if (this.members(m.mode).length >= (m.mode === "zombie" ? 30 : MAXP)) { ws.send(JSON.stringify({ t: "full" })); return; }
       ws.serializeAttachment({ mode: m.mode, code: room.code, t: Date.now(), name: String(m.name || "Jogador").slice(0, 12), diff: [0, 1, 2].includes(m.diff) ? m.diff : 1 });
       const now = Date.now(), n = this.members(m.mode).length;
       if (!room.startAt) room.startAt = now + WAIT;
-      if (n >= MAXP && room.startAt - now > FULL) room.startAt = now + FULL;
+      if (n >= (m.mode === "zombie" ? 30 : MAXP) && room.startAt - now > FULL) room.startAt = now + FULL;
       this.save(); await this.rearm();
       ws.send(JSON.stringify({ t: "joined", mode: m.mode, code: room.code }));
       this.broadcast();
@@ -130,10 +130,10 @@ export class Matchmaker extends DurableObject {
         const mem = this.members(m), cnt = [0, 1, 2].map((d) => mem.filter((x) => x.a.diff === d).length);
         let best = 1, bc = -1; for (const d of [1, 0, 2]) if (cnt[d] > bc) { bc = cnt[d]; best = d; }
         mem.forEach((x, k) => {
-          try { x.ws.send(JSON.stringify({ t: "go", mode: m, code: r.code, role: k ? "join" : "host", d: best })); } catch {}
+          try { x.ws.send(JSON.stringify({ t: "go", mode: m, code: r.code, role: k ? "join" : "host", d: best, map: r.map })); } catch {}
           x.ws.serializeAttachment({});
         });
-        this.rooms[m] = this.fresh();
+        this.rooms[m] = this.fresh(r.map);
       }
     }
     this.save(); await this.rearm(); this.broadcast();
