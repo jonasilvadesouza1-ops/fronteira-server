@@ -77,7 +77,7 @@ export class Matchmaker extends DurableObject {
   members(m) {
     const code = this.rooms[m].code;
     return this.ctx.getWebSockets().map((ws) => ({ ws, a: ws.deserializeAttachment() || {} }))
-      .filter((x) => x.a.mode === m && x.a.code === code).sort((x, y) => x.a.t - y.a.t);
+      .filter((x) => x.a.mode === m && x.a.code === code && Date.now() - (x.a.seen || 0) < 50000).sort((x, y) => x.a.t - y.a.t);
   }
   async rearm() {
     const t = MODES.map((m) => this.rooms[m].startAt).filter(Boolean);
@@ -86,35 +86,38 @@ export class Matchmaker extends DurableObject {
   broadcast() {
     const rooms = {};
     for (const m of MODES) { const mem = this.members(m); rooms[m] = { code: this.rooms[m].code, startAt: this.rooms[m].startAt, map: this.rooms[m].map, n: mem.length, names: mem.map((x) => x.a.name), votes: [0, 1, 2].map((d) => mem.filter((x) => x.a.diff === d).length) }; }
-    const msg = JSON.stringify({ t: "state", now: Date.now(), online: this.ctx.getWebSockets().length, rooms });
+    const msg = JSON.stringify({ t: "state", now: Date.now(), online: this.ctx.getWebSockets().filter((w) => Date.now() - ((w.deserializeAttachment() || {}).seen || 0) < 50000).length, rooms });
     for (const ws of this.ctx.getWebSockets()) { try { ws.send(msg); } catch {} }
   }
   async fetch() {
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({});
+    server.serializeAttachment({ seen: Date.now() });
     this.broadcast();
     return new Response(null, { status: 101, webSocket: client });
   }
   async webSocketMessage(ws, raw) {
     let m; try { m = JSON.parse(raw); } catch { return; }
     const a = ws.deserializeAttachment() || {};
+    a.seen = Date.now(); ws.serializeAttachment(a);
+    if (m.a === "ping") { this.broadcast(); return; }
     if (m.a === "join" && !a.mode && MODES.includes(m.mode)) {
       const room = this.rooms[m.mode];
       if (this.members(m.mode).length >= (m.mode === "zombie" ? 30 : MAXP)) { ws.send(JSON.stringify({ t: "full" })); return; }
-      ws.serializeAttachment({ mode: m.mode, code: room.code, t: Date.now(), name: String(m.name || "Jogador").slice(0, 12), diff: [0, 1, 2].includes(m.diff) ? m.diff : 1 });
+      const used = new Set(this.members(m.mode).map((x) => x.a.name)); let nm = String(m.name || "Jogador").slice(0, 12), k = 2; const base = nm; while (used.has(nm)) nm = base.slice(0, 10) + " " + k++;
+      ws.serializeAttachment({ mode: m.mode, code: room.code, t: Date.now(), seen: Date.now(), name: nm, diff: [0, 1, 2].includes(m.diff) ? m.diff : 1 });
       const now = Date.now(), n = this.members(m.mode).length;
       if (!room.startAt) room.startAt = now + WAIT;
       if (n >= (m.mode === "zombie" ? 30 : MAXP) && room.startAt - now > FULL) room.startAt = now + FULL;
       this.save(); await this.rearm();
-      ws.send(JSON.stringify({ t: "joined", mode: m.mode, code: room.code }));
+      ws.send(JSON.stringify({ t: "joined", mode: m.mode, code: room.code, name: nm }));
       this.broadcast();
     } else if (m.a === "diff" && a.mode && [0, 1, 2].includes(m.d)) { a.diff = m.d; ws.serializeAttachment(a); this.broadcast();
     } else if (m.a === "leave" && a.mode) await this.leave(ws);
   }
   async leave(ws) {
     const a = ws.deserializeAttachment() || {};
-    ws.serializeAttachment({});
+    ws.serializeAttachment({ seen: Date.now() });
     if (a.mode && this.rooms[a.mode].code === a.code && this.members(a.mode).filter((x) => x.ws !== ws).length === 0) {
       this.rooms[a.mode].startAt = 0; this.save();
     }
@@ -131,7 +134,7 @@ export class Matchmaker extends DurableObject {
         let best = 1, bc = -1; for (const d of [1, 0, 2]) if (cnt[d] > bc) { bc = cnt[d]; best = d; }
         mem.forEach((x, k) => {
           try { x.ws.send(JSON.stringify({ t: "go", mode: m, code: r.code, role: k ? "join" : "host", d: best, map: r.map })); } catch {}
-          x.ws.serializeAttachment({});
+          x.ws.serializeAttachment({ seen: Date.now() });
         });
         this.rooms[m] = this.fresh(r.map);
       }
