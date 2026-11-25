@@ -44,7 +44,14 @@ export class Room extends DurableObject {
       server.send(JSON.stringify({ t: "welcome", pid: att.pid }));
       host.send(JSON.stringify({ t: "join", pid: att.pid }));
     }
+    this.ctx.waitUntil(this.getColo().then((c) => { if (c) for (const w of this.ctx.getWebSockets()) { try { w.send(JSON.stringify({ t: "colo", colo: c })); } catch {} } }));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async getColo() {
+    if (this.colo) return this.colo;
+    try { const t = await (await fetch("https://cloudflare.com/cdn-cgi/trace")).text(); this.colo = (t.match(/colo=(\w+)/) || [])[1]; } catch {}
+    return this.colo;
   }
 
   webSocketMessage(ws, msg) {
