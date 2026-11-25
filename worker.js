@@ -6,13 +6,13 @@ export default {
     const u = new URL(req.url);
     if (u.pathname === "/mm") {
       if (req.headers.get("Upgrade") !== "websocket") return new Response("websocket only", { status: 426 });
-      return env.MM.get(env.MM.idFromName("main")).fetch(req);
+      return env.MM.get(env.MM.idFromName("mm-sam"), { locationHint: "sam" }).fetch(req);
     }
     if (u.pathname !== "/ws") return new Response("Fronteira server ok");
     if (req.headers.get("Upgrade") !== "websocket") return new Response("websocket only", { status: 426 });
     const room = (u.searchParams.get("room") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
     if (room.length < 3) return new Response("codigo invalido", { status: 400 });
-    return env.ROOM.get(env.ROOM.idFromName(room)).fetch(req);
+    return env.ROOM.get(env.ROOM.idFromName(room), { locationHint: "sam" }).fetch(req);
   },
 };
 
@@ -48,6 +48,7 @@ export class Room extends DurableObject {
   }
 
   webSocketMessage(ws, msg) {
+    if (typeof msg === "string" && msg.length < 60 && msg.includes('"a":"rtt"')) { try { ws.send(JSON.stringify({ t: "rtt", ts: JSON.parse(msg).t })); } catch {} return; }
     const a = ws.deserializeAttachment();
     if (a.host) { for (const g of this.guests()) { try { g.send(msg); } catch {} } return; }
     if (typeof msg !== "string" || msg.length > 2000) return;
